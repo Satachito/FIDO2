@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>Google + WebAuthn Sample</title>
+    <script src="https://accounts.google.com/gsi/client"></script>
+</head>
+<body>
+    <h1>Google + WebAuthn Demo</h1>
+
+    <div id="g_id_onload"
+         data-client_id="1046625556668-s34tmr5ps2q2jeibg6nqvkmmpb5t92eh.apps.googleusercontent.com"
+         data-auto_prompt="false">
+    </div>
+    <div class="g_id_signin" data-type="standard"></div>
+
+    <div id="actions" style="display: none;">
+        <p id="status"></p>
+        <button id="btn-register">WebAuthn登録</button>
+        <button id="btn-login">WebAuthnログイン</button>
+    </div>
+
+    <script src="dist/bundle.js"></script>
+</body>
+</html>
+
