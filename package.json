@@ -2,8 +2,11 @@
   "dependencies": {
     "@simplewebauthn/browser": "^13.1.0",
     "@simplewebauthn/server": "^13.1.1",
+    "cookie": "^1.0.2",
     "google-auth-library": "^9.15.1",
-    "jose": "^6.0.11"
+    "jose": "^6.0.11",
+    "lowdb": "^7.0.1",
+    "nanoid": "^5.1.5"
   },
   "type": "module",
   "devDependencies": {

@@ -4,6 +4,7 @@ import {
 
 import {
 	API_STATIC_SERVER
+,	CORS_API_STATIC_SERVER
 ,	SendHTML
 ,	SendJSONable
 ,	BodyAsJSON
@@ -61,14 +62,14 @@ RegisterOptions = async ( Q, S ) => {
 		{	rpName					: 'My App'
 		,	userID					: Buffer.from( user.id, 'utf8' )
 		,	userName				: user.id
-		,	requireUserVerification	: false
+		,	requireUserVerification	: true
 		}
 	)
 
 	user.currentChallenge = options.challenge
 
-//	options.challenge = isoBase64URL.fromBuffer(Buffer.from(options.challenge))
-//	options.user.id = isoBase64URL.fromBuffer(Buffer.from(options.user.id))
+	options.challenge = isoBase64URL.fromBuffer(Buffer.from(options.challenge))
+	options.user.id = isoBase64URL.fromBuffer(Buffer.from(options.user.id))
 
 	SendJSONable( S, options )
 }
@@ -97,9 +98,10 @@ Register = async ( Q, S ) => {
 		user.credentials.push( verification.registrationInfo )
 		SendJSONable( S, { verified: true } )
 	} else {
+	//	TODO: 400 de ii?
 		S.writeHead(
 			400
-		,	{ 'Content-Type': type }
+		,	{ 'Content-Type': 'application/json' }
 		)
 	,	S.end( JSON.stringify( { verified: false } ) )
 	}
@@ -107,34 +109,33 @@ Register = async ( Q, S ) => {
 
 import { isoBase64URL } from '@simplewebauthn/server/helpers';
 
-/*
 const
-AuthOptions = async (Q, S) => {
-    const { userId } = await BodyAsJSON(Q);
-    const user = db.get(userId);
+AuthOptions = async ( Q, S ) => {
 
-    const options = generateAuthenticationOptions({
-        allowCredentials: user.credentials.map(cred => ({
-            id: cred.credentialID, // ← Buffer
-            type: 'public-key',
-            transports: ['usb', 'ble', 'nfc', 'internal']
-        })),
-        userVerification: 'preferred',
-        rpID: 'localhost'
-    });
+	const
+	{ userId } = await BodyAsJSON( Q )
 
-    // Base64URL encode credential IDs
-    options.allowCredentials = options.allowCredentials.map(cred => ({
-        ...cred,
-        id: isoBase64URL.fromBuffer(cred.id)
-    }));
+	const
+	user = db.get( userId )
 
-    // Encode challenge as well
-    options.challenge = isoBase64URL.fromBuffer(Buffer.from(options.challenge));
+	const
+	options = await generateAuthenticationOptions(
+		{	allowCredentials	: user.credentials.map(
+				cred => (
+					{	id			: isoBase64URL.fromBuffer( cred.credentialID )	// ← Buffer
+					,	type		: 'public-key'
+					,	transports	: [ 'usb', 'ble', 'nfc', 'internal' ]
+					}
+				)
+			)
+		,	userVerification	: 'preferred'
+		,	rpID				: 'localhost'
+		}
+	)
 
-    SendJSONable(S, options);
+	SendJSONable( S, options )
 }
-*/
+/*
 const
 AuthOptions = async ( Q, S ) => {
 
@@ -145,7 +146,7 @@ AuthOptions = async ( Q, S ) => {
 	user = db.get( userId )
 
 	const
-	options = generateAuthenticationOptions(
+	options = await generateAuthenticationOptions(
 		{	allowCredentials: user.credentials.map(
 				c => (
 					{	id		: c.credentialID
@@ -159,6 +160,7 @@ AuthOptions = async ( Q, S ) => {
 	user.currentChallenge = options.challenge;
 	SendJSONable( S, options )
 }
+*/
 
 const
 Auth = async ( Q, S ) => {
@@ -173,7 +175,7 @@ Auth = async ( Q, S ) => {
 
 	const
 	verification = await verifyAuthenticationResponse(
-		{	response			: assertion
+		{	response			: attestation
 		,	expectedChallenge	: user.currentChallenge
 		,	expectedOrigin		: 'http://localhost:3000'
 		,	expectedRPID		: 'localhost'
