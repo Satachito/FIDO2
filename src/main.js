@@ -1,36 +1,35 @@
 import {
-	startRegistration,
-	startAuthentication,
+	startRegistration
+,	startAuthentication
 } from '@simplewebauthn/browser'
 
 import {
-	PostJSON
+	FetchJSON
+,	PostJSON
 } from '../SAT/SAT.js'
 
-let
-userId
-
 const
-ReportError = _ => (
-	console.error( _ )
-,	( _ instanceof Error	) && ( STATUS.textContent = `ログイン失敗: ${ _.message }`						)
-,	( _ instanceof Response	) && ( STATUS.textContent = `ログイン失敗: ${ _.status }: ${ _.statusText }`	)
-)
+ErrorString = _ => _ instanceof Error
+?	_.message
+:	_ instanceof Response
+	?	`${ _.status }: ${ _.statusText }`
+	:	_.toString()
+;
 
 google.accounts.id.initialize(
 	{	client_id	: '1046625556668-s34tmr5ps2q2jeibg6nqvkmmpb5t92eh.apps.googleusercontent.com'
 	,	auto_prompt	: true	//	trueにすると、ユーザーがログインしている場合、自動的にログインフローが開始される。
 	,	callback	: response => PostJSON(
 			'http://localhost:3000/auth/google'
-		,	{ credential: response.credential }
+		,	response
 		).then(
-			_ => (
-				userId = _.userId
-			,	console.log( 'Google sign-in successful. User ID:', userId )
-			,	STATUS.textContent = 'ログイン中: ' + userId
+			payload => (
+				STATUS.textContent = 'ログイン中: ' + payload.name
 			,	ACTIONS.style.display = 'block'
 			)
-		).catch( ReportError )
+		).catch(
+			_ => STATUS.textContent = `ログイン失敗: ${ErrorString( _ )}`
+		)
 	}
 )
 
@@ -41,31 +40,29 @@ google.accounts.id.renderButton(
 
 google.accounts.id.prompt()
 
-BTN_REGISTER.onclick = () => PostJSON(
+BTN_REGISTER.onclick = () => FetchJSON(
 	'http://localhost:3000/webauthn/register-options'
-,	{ userId }
 ).then(
 	_ => startRegistration( _ ).then(
-		attestation => PostJSON(
+		_ => PostJSON(
 			'http://localhost:3000/webauthn/register'
-		,	{ userId, attestation }
+		,	_
 		).then(
-			_ => alert( _.verified ? '✅ 登録完了！' : '❌ 登録失敗' )
+			_ => alert( _ ? '✅ 登録完了！' : '❌ 登録失敗' )
 		)
 	)
-).catch( ReportError )
+).catch( _ => console.error( 'webauthn/register', ErrorString( _ ) ) )
 
-BTN_LOGIN.onclick = () => PostJSON(
+BTN_LOGIN.onclick = () => FetchJSON(
 	'http://localhost:3000/webauthn/auth-options'
-,	{ userId }
 ).then(
 	_ => startAuthentication( _ ).then(
-		assertion => PostJSON(
+		_ => PostJSON(
 			'http://localhost:3000/webauthn/auth'
-		,	{ userId, assertion }
+		,	_
 		).then(
-			_ => alert( _.verified ? '✅ 認証成功！' : '❌ 認証失敗' )
+			_ => alert( _ ? '✅ 認証成功！' : '❌ 認証失敗' )
 		)
 	)
-).catch( ReportError )
+).catch( _ => console.error( 'webauthn/auth', ErrorString( _ ) ) )
 

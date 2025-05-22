@@ -2,3 +2,5 @@ export GOOGLE_CLIENT_ID=1046625556668-s34tmr5ps2q2jeibg6nqvkmmpb5t92eh.apps.goog
 export GOOGLE_CLIENT_SECRET=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
 export GOOGLE_REDIRECT_URI=http://localhost:3000/auth/google
 
+export SESSION_SECRET=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
+
