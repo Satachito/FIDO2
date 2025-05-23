@@ -4,3 +4,5 @@ unset GOOGLE_REDIRECT_URI
 
 unset SESSION_SECRET
 
+unset RPID
+unset ORIGIN

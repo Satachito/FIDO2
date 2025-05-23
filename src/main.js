@@ -43,20 +43,22 @@ google.accounts.id.prompt()
 BTN_REGISTER.onclick = () => FetchJSON(
 	'http://localhost:3000/webauthn/register-options'
 ).then(
-	_ => startRegistration( _ ).then(
-		_ => PostJSON(
-			'http://localhost:3000/webauthn/register'
-		,	_
-		).then(
-			_ => alert( _ ? '✅ 登録完了！' : '❌ 登録失敗' )
+	_ => {
+		startRegistration( { optionsJSON: _ } ).then(
+			_ => PostJSON(
+				'http://localhost:3000/webauthn/register'
+			,	_
+			).then(
+				_ => alert( _ ? '✅ 登録完了！' : '❌ 登録失敗' )
+			)
 		)
-	)
+	}
 ).catch( _ => console.error( 'webauthn/register', ErrorString( _ ) ) )
 
 BTN_LOGIN.onclick = () => FetchJSON(
 	'http://localhost:3000/webauthn/auth-options'
 ).then(
-	_ => startAuthentication( _ ).then(
+	_ => startAuthentication( { optionsJSON: _ } ).then(
 		_ => PostJSON(
 			'http://localhost:3000/webauthn/auth'
 		,	_

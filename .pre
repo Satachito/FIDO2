@@ -4,3 +4,5 @@ export GOOGLE_REDIRECT_URI=http://localhost:3000/auth/google
 
 export SESSION_SECRET=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
 
+export RPID=localhost
+export ORIGIN=http://localhost:3000

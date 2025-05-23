@@ -12,6 +12,8 @@ import {
 ,	_403
 ,	_404
 ,	_500
+,	SerializeSessionCookie
+,	ParseSessionCookie
 } from './SAT/Bullet.js'
 
 import {
@@ -25,91 +27,23 @@ import {
 	OAuth2Client
 } from 'google-auth-library'
 
-import crypto from 'crypto'
-
-import {
-	parse
-,	serialize
-} from 'cookie'
-
-import { isoBase64URL } from '@simplewebauthn/server/helpers';
-
-
 const
-client = new OAuth2Client( process.env.GOOGLE_CLIENT_ID )
-
-
-//	TODO: Make database
-import { Low } from 'lowdb'
-import { JSONFile } from 'lowdb/node'
-
-const db = new Low( new JSONFile( 'Payloads.json' ), {} )
-await db.read()
-
-const
-GetPayload = async sessionID => {
-    await db.read()
-    const $ = db.data[ sessionID ]
-    if ( !$ ) throw new Error( 'No session payload' )
-    return $
+sessionDB = {	//	sessionID: { userID, challenge = null }
 }
 
 const
-SetPayload = async ( sessionID, payload ) => {
-    db.data[ sessionID ] = payload
-    await db.write()
+userDB = {		//	userID: { payload, credential = [] }
 }
 
-/*
-  payload: {
-    iss: 'https://accounts.google.com',
-    azp: '1046625556668-s34tmr5ps2q2jeibg6nqvkmmpb5t92eh.apps.googleusercontent.com',
-    aud: '1046625556668-s34tmr5ps2q2jeibg6nqvkmmpb5t92eh.apps.googleusercontent.com',
-    sub: '106308084972031215345',
-    email: 's8at2or8u@gmail.com',
-    email_verified: true,
-    nbf: 1747718135,
-    name: 'Satoru Ogura',
-    picture: 'https://lh3.googleusercontent.com/a/ACg8ocI1fqL5Icmdfch3st-tVqbaw0kM7Eht-kld9M__NRG73mqmDn4s=s96-c',
-    given_name: 'Satoru',
-    family_name: 'Ogura',
-    iat: 1747718435,
-    exp: 1747722035,
-    jti: '28060b0f82c8cb6f32d6bb36717d08c8c0891be1'
-  }
-*/
-
-function sign(value) {
-	return crypto
-		.createHmac('sha256', process.env.SESSION_SECRET)
-		.update(value)
-		.digest('hex')
-}
-
-function serializeSessionCookie(sessionID) {
-	const signature = sign(sessionID)
-	const value = `${sessionID}.${signature}`
-	return serialize(
-		'session',
-		value,
-		{ httpOnly: true, path: '/', sameSite: 'lax', secure: false, maxAge: 60 * 60 * 24 * 7 }
-	)
-}
-
-function parseSessionCookie(cookieHeader) {
-	const cookies = parse(cookieHeader)
-	const session = cookies.session
-	if (!session) throw new Error('No session cookie')
-
-	const [sessionID, signature] = session.split('.')
-	if (sign(sessionID) !== signature) throw new Error('Invalid session signature')
-	return sessionID
-}
-
+//	ON DEBUG
+if(	!process.env.GOOGLE_CLIENT_ID	) throw 'GOOGLE_CLIENT_ID'
+if(	!process.env.RPID				) throw 'RPID'
+if(	!process.env.ORIGIN				) throw 'ORIGIN'
+//
 
 const
 GoogleAuth = ( Q, S ) => BodyAsJSON( Q ).then(
-	body => client.verifyIdToken(
+	body => new OAuth2Client( process.env.GOOGLE_CLIENT_ID ).verifyIdToken(
 		{	idToken		: body.credential
 		,	audience	: process.env.GOOGLE_CLIENT_ID
 		}
@@ -117,176 +51,194 @@ GoogleAuth = ( Q, S ) => BodyAsJSON( Q ).then(
 		ticket => {
 			const
 			sessionID = crypto.randomUUID()
+
 			const
 			payload = ticket.getPayload()
-			SetPayload( sessionID, payload )
+
+			const
+			userID = payload.sub
+
+			userDB[ userID ]
+			?	userDB[ userID ].payload = payload
+			:	userDB[ userID ] = { payload, credentials: [] }
+
+			sessionDB[ sessionID ] = { userID, challenge: null }
+
 			S.setHeader(
 				'Set-Cookie'
-			,	serializeSessionCookie( sessionID )
-			/*
-			,	serialize(
-					'sessionID'
-				,	sessionID
-				,	{	httpOnly	: true
-					,	path		: '/'
-					,	sameSite	: 'lax'
-					,	secure		: false	// HTTPS にするなら true に
-					,	maxAge		: 60 * 60 * 24 * 7 // 1 week
-					}
-				)
-			*/
+			,	SerializeSessionCookie( sessionID )
 			)
 			SendJSONable( S, payload )
 		}
 	)
 )
 
-const
-SessionID = Q => new Promise( R => R( parseSessionCookie( Q.headers.cookie ) ) )
+////////////////////////////////////////////////////////////////
 
 const
-RegisterOptions = ( Q, S ) => SessionID( Q ).then(
-	sessionID => GetPayload( sessionID ).then(
-		payload => generateRegistrationOptions(
-			{	rpName					: 'My App'
-			,	userID					: Buffer.from( payload.sub, 'utf8' )
-			,	userName				: payload.name
-			,	requireUserVerification	: true
-			}
-		).then(
-			options => (
-				payload.currentChallenge = options.challenge
-			,	payload.credentials = []
-			,	SetPayload( sessionID, payload )
-			,	SendJSONable( S, options )
+Session = Q => new Promise(
+	( R, J ) => {
+		const
+		session = sessionDB[ ParseSessionCookie( Q.headers.cookie ) ]
+		if ( !session ) return J( new Error( 'Session not found' ) )
+
+		const
+		user = userDB[ session.userID ]
+		if ( !user ) return J( new Error( 'User not found' ) )
+
+		R( { session, user } )
+	}
+)
+
+////	TODO: DETECT ILLEGAL ATTEMPT AND LOG IT
+const
+Unauthorized = ( _, Q, S ) => (
+	console.error( _ )
+,	_401( S )
+)
+
+const
+InternalServerError = ( _, Q, S ) => (
+	console.error( _ )
+,	_500( S )
+)
+
+const
+RegistrationOptions = ( Q, S ) => Session( Q ).then(
+	( { session, user } ) => generateRegistrationOptions( 
+		{	//	GenerateRegistrationOptionsOpts
+			rpName					: 'SimpleWebAuthn Example'
+		,	rpID					: process.env.RPID
+		,	userName				: user.payload.name
+		,	timeout					: 60000
+		,	attestationType			: 'none'
+		,	excludeCredentials		: user.credentials.map(
+				cred => (
+					{	id			: cred.id
+					,	type		: 'public-key'
+					,	transports	: cred.transports
+					}
+				)
 			)
-		)
-	)
-).catch(
-	_ => (
-		console.error( _ )
-	,	S.end( 'Unauthorized' )	//	TODO:
-	)
-)
-
-const
-PublicKeyEncoded = _ => (
-	_.publicKey = _.publicKey.toString( 'base64url' )
-,	_
-)
-
-const
-PublicKeyDecoded = _ => (
-	_.publicKey = Buffer.from( _.publicKey, 'base64url' )
-,	_
-)
-
-const
-Register = ( Q, S ) => SessionID( Q ).then(
-	sessionID => Promise.all(
-		[	BodyAsJSON( Q )
-		,	GetPayload( sessionID )
-		]
-	).then( 
-		( [ response, payload ] ) => verifyRegistrationResponse(
-			{	response
-			,	expectedChallenge	: payload.currentChallenge
-			,	expectedOrigin		: 'http://localhost:3000'
-			,	expectedRPID		: 'localhost'
+		,	authenticatorSelection	: {
+				residentKey			: 'discouraged'
+			,	userVerification	: 'preferred'
 			}
-		).then(
-			_ => _.verified
-			? (	payload.credentials.push( PublicKeyEncoded( _.registrationInfo.credential ) )
-			,	db.write()
-			,	SendJSONable( S, true )
-			)
-			:	SendJSONable( S, false )
-		)
-	)
-).catch(
-	_ => (
-		console.error( _ )
-	,	_500( S )
-	)
-)
-
-const
-AuthOptions = ( Q, S ) => SessionID( Q ).then(
-	sessionID => GetPayload( sessionID ).then(
-		payload => generateAuthenticationOptions(
-			{	allowCredentials	: payload.credentials
-			,	userVerification	: 'required'
-			,	rpID				: 'localhost'
-			}
-		).then(
-			options => (
-				payload.currentChallenge = options.challenge
-			,	SetPayload( sessionID, payload )
-			,	SendJSONable( S, options )
-			)
-		)
-	)
-).catch(
-	_ => (
-		console.error( _ )
-	,	_500( S )
-	)
-)
-
-const
-Auth = ( Q, S ) => SessionID( Q ).then(
-	sessionID => Promise.all(
-		[	BodyAsJSON( Q )
-		,	GetPayload( sessionID )
-		]
-	).then(
-		( [ response, payload ] ) => {
-			const
-			credential = PublicKeyDecoded( payload.credentials.find( c => c.id === response.id ) )
-
-			if ( !credential ) {
-				console.error( 'No matching credential found' )
-				return _403( S )
-			}
-
-			const
-			authenticator = {
-				credentialID		: Buffer.from( credential.id, 'base64url' )
-			,	credentialPublicKey	: credential.publicKey
-			,	counter				: credential.counter
-			,	transports			: credential.transports
-			}
-
-			console.log( authenticator )
-
-			verifyAuthenticationResponse(
-				{	response
-				,	expectedChallenge	: payload.currentChallenge
-				,	expectedOrigin		: 'http://localhost:3000'
-				,	expectedRPID		: 'localhost'
-				,	authenticator
-				}
-			).then(
-				_ => SendJSONable( S, _.verified )
-			).catch(
-				_ => console.error( 'verifyAuthenticationResponse', _ )
-			)
+		,	supportedAlgorithmIDs	: [
+				- 7
+			,	- 257
+			]
 		}
-	)
-).catch(
-	_ => (
-		console.error( _ )
-	,	_500( S )
-	)
-)
+	).then(
+		options => (
+			session.challenge = options.challenge
+		,	SendJSONable( S, options )
+		)
+	).catch( _ => InternalServerError( _, Q, S ) )
+).catch( _ => Unauthorized( _, Q, S ) )
+
+const
+Registration = ( Q, S ) => Promise.all(
+	[	Session( Q )
+	,	BodyAsJSON( Q )
+	]
+).then(
+	( [ { session, user }, body ] ) => verifyRegistrationResponse(
+		{	response				: body
+		,	expectedChallenge		: session.challenge
+		,	expectedOrigin			: process.env.ORIGIN
+		,	expectedRPID			: process.env.RPID
+		,	requireUserVerification	: false
+		}
+	).then(
+		verification => {
+			const {
+				verified
+			,	registrationInfo
+			} = verification
+
+			if ( verified && registrationInfo ) {
+				const
+				{ credential } = registrationInfo
+				const
+				existingCredential = user.credentials.find( cred => cred.id === credential.id )
+				if ( ! existingCredential ) {
+					const
+					newCredential = {	//	WebAuthnCredential
+						id			: credential.id
+					,	publicKey	: credential.publicKey
+					,	counter		: credential.counter
+					,	transports	: body.response.transports
+					}
+					user.credentials.push ( newCredential )
+				}
+			}
+			SendJSONable( S, verified )
+		}
+	).catch( _ => InternalServerError( _, Q, S ) )
+).catch( _ => Unauthorized( _, Q, S ) )
+
+const
+AuthenticationOptions = ( Q, S ) => Session( Q ).then(
+	( { session, user } ) => generateAuthenticationOptions(
+		{	timeout				: 60000
+		,	allowCredentials	: user.credentials.map (
+				cred => (
+					{	id			: cred.id
+					,	type		: 'public-key'
+					,	transports	: cred.transports
+					}
+				)
+			)
+		,	userVerification	: 'preferred'
+		,	rpID				: process.env.RPID
+		}
+	).then(
+		options => (
+			session.challenge = options.challenge
+		,	SendJSONable( S, options )
+		)
+	).catch( _ => InternalServerError( _, Q, S ) )
+).catch( _ => Unauthorized( _, Q, S ) )
+
+const
+Authentication = ( Q, S ) => Promise.all(
+	[	Session( Q )
+	,	BodyAsJSON( Q )
+	]
+).then(
+	( [ { session, user }, body ] ) => new Promise(
+		( R, J ) => {
+			const
+			credential = user.credentials.find( _ => _.id === body.id )
+			credential ? R( credential ) : J()
+		}
+	).then(
+		credential => verifyAuthenticationResponse(
+			{	response				: body
+			,	expectedChallenge		: session.challenge
+			,	expectedOrigin			: process.env.ORIGIN
+			,	expectedRPID			: process.env.RPID
+			,	credential				: credential
+			,	requireUserVerification	: false
+			}
+		).then(
+			( { verified, authenticationInfo } ) => { 
+				if ( verified ) credential.counter = authenticationInfo.newCounter
+				session.challenge = null;
+				SendJSONable( S, verified )
+			}
+		).catch( _ => InternalServerError( _, Q, S ) )
+	).catch( _ => InternalServerError( _, Q, S ) )
+).catch( _ => Unauthorized( _, Q, S ) )
 
 const
 server = CORS_API_STATIC_SERVER(
 	{	'/auth/google'					: GoogleAuth
-	,	'/webauthn/register-options'	: RegisterOptions
-	,	'/webauthn/register'			: Register
-	,	'/webauthn/auth-options' 		: AuthOptions
-	,	'/webauthn/auth'				: Auth
+	,	'/webauthn/register-options'	: RegistrationOptions
+	,	'/webauthn/register'			: Registration
+	,	'/webauthn/auth-options' 		: AuthenticationOptions
+	,	'/webauthn/auth'				: Authentication
 	}
 ,	process.argv[ 2 ] || '.'
 ).listen(
@@ -294,11 +246,3 @@ server = CORS_API_STATIC_SERVER(
 ,	() => console.log( 'Bullet server stated on:', server.address() )
 )
 
-/*
-					cred => (
-						{	id			: cred.credential.id
-						,	type		: cred.credential.type
-						,	transports	: cred.credential.transports	//	[ 'usb', 'ble', 'nfc', 'internal' ]
-						}
-					)
-*/
