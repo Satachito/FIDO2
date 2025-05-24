@@ -70,8 +70,8 @@ GoogleAuth = ( Q, S ) => BodyAsJSON( Q ).then(
 			)
 			SendJSONable( S, payload )
 		}
-	)
-)
+	).catch( _ => _401( S ) )
+).catch( _ => _500( S ) )
 
 ////////////////////////////////////////////////////////////////
 
@@ -151,12 +151,7 @@ Registration = ( Q, S ) => Promise.all(
 		,	requireUserVerification	: false
 		}
 	).then(
-		verification => {
-			const {
-				verified
-			,	registrationInfo
-			} = verification
-
+		( { verified, registrationInfo } )=> {
 			if ( verified && registrationInfo ) {
 				const
 				{ credential } = registrationInfo
