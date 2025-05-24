@@ -267,7 +267,7 @@ Authentication = ( Q, S ) => Promise.all(
 			,	expectedChallenge		: session.challenge
 			,	expectedOrigin			: process.env.ORIGIN
 			,	expectedRPID			: process.env.RPID
-			,	credential				: credential
+			,	credential
 			,	requireUserVerification	: true
 			}
 		).then(
