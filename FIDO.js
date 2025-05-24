@@ -24,16 +24,52 @@ import {
 } from '@simplewebauthn/server'
 
 import {
+	isoUint8Array
+,	isoBase64URL
+} from '@simplewebauthn/server/helpers'
+
+
+import {
 	OAuth2Client
 } from 'google-auth-library'
 
-const
-sessionDB = {	//	sessionID: { userID, challenge = null }
-}
+import {
+	serialize
+,	deserialize
+} from 'v8'
 
-const
-userDB = {		//	userID: { payload, credential = [] }
-}
+import {
+} from 'fs/promises'
+
+import {
+	existsSync
+,	readFileSync
+,	writeFileSync
+} from 'fs'
+
+
+const SESSION_FILE = './sessionDB.bin'
+const USER_FILE = './userDB.bin'
+
+const	//	sessionID: { userID, challenge = null }
+sessionDB = existsSync( SESSION_FILE )
+?	deserialize( readFileSync( SESSION_FILE ) )
+:	{}
+
+const	//	userID: { payload, credential = [] }
+userDB = existsSync( USER_FILE )
+?	deserialize( readFileSync( USER_FILE ) )
+:	{}
+
+process.on(
+	'SIGINT'
+,	async () => (
+		console.log( 'SIGINT:', sessionDB, userDB )
+	,	writeFileSync( SESSION_FILE	, serialize( sessionDB	) )
+	,	writeFileSync( USER_FILE	, serialize( userDB		) )
+	,	process.exit( 0 )
+	)
+)
 
 //	ON DEBUG
 if(	!process.env.GOOGLE_CLIENT_ID	) throw 'GOOGLE_CLIENT_ID'
@@ -64,6 +100,8 @@ GoogleAuth = ( Q, S ) => BodyAsJSON( Q ).then(
 
 			sessionDB[ sessionID ] = { userID, challenge: null }
 
+console.log( 'GoogleAuth:', sessionDB, userDB )
+
 			S.setHeader(
 				'Set-Cookie'
 			,	SerializeSessionCookie( sessionID )
@@ -80,54 +118,59 @@ Session = Q => new Promise(
 	( R, J ) => {
 		const
 		session = sessionDB[ ParseSessionCookie( Q.headers.cookie ) ]
-		if ( !session ) return J( new Error( 'Session not found' ) )
+		if ( !session ) throw new Error( 'Session not found' )
 
 		const
 		user = userDB[ session.userID ]
-		if ( !user ) return J( new Error( 'User not found' ) )
+		if ( !user ) throw new Error( 'User not found' )
 
 		R( { session, user } )
 	}
 )
 
-////	TODO: DETECT ILLEGAL ATTEMPT AND LOG IT
+////	TODO: DETECT ILLEGAL ATTEMPT AND REPORT IT
 const
 Unauthorized = ( _, Q, S ) => (
 	console.error( _ )
-,	_401( S )
+,	_401( S, _.message )
 )
 
 const
 InternalServerError = ( _, Q, S ) => (
 	console.error( _ )
-,	_500( S )
+,	_500( S, _.message )
 )
 
 const
 RegistrationOptions = ( Q, S ) => Session( Q ).then(
-	( { session, user } ) => generateRegistrationOptions( 
+	( { session, user } ) => generateRegistrationOptions(
 		{	//	GenerateRegistrationOptionsOpts
-			rpName					: 'SimpleWebAuthn Example'
+			rpName					: 'SAT AUTH'
 		,	rpID					: process.env.RPID
+		,	userID					: isoUint8Array.fromUTF8String( session.userID )
 		,	userName				: user.payload.name
+		,	userDisplayName			: user.payload.displayName
+
 		,	timeout					: 60000
-		,	attestationType			: 'none'
-		,	excludeCredentials		: user.credentials.map(
+		,	attestationType			: 'none'				//	none, indirect, direct, enterprise, ...etc
+		,	authenticatorSelection	: {						//	Passkey -> residentKey: 'required' + userVerification: 'required'
+				residentKey				: 'required'
+			,	userVerification		: 'required'
+		//	,	authenticatorAttachment	: 'platform'		//	そのデバイスでのみの対応になる->スマホでの認証とかができなくなる。
+			}
+		,	excludeCredentials		: user.credentials.map(	//	二重登録防止
 				cred => (
-					{	id			: cred.id
-					,	type		: 'public-key'
-					,	transports	: cred.transports
+					{	id				: isoBase64URL.fromBuffer( cred.id )
+					,	type			: 'public-key'
+					,	transports		: cred.transports
 					}
 				)
 			)
-		,	authenticatorSelection	: {
-				residentKey			: 'discouraged'
-			,	userVerification	: 'preferred'
-			}
 		,	supportedAlgorithmIDs	: [
-				- 7
-			,	- 257
+				- 7		//	ES256
+			,	- 257	//	RS256
 			]
+		//	extension
 		}
 	).then(
 		options => (
@@ -148,28 +191,38 @@ Registration = ( Q, S ) => Promise.all(
 		,	expectedChallenge		: session.challenge
 		,	expectedOrigin			: process.env.ORIGIN
 		,	expectedRPID			: process.env.RPID
-		,	requireUserVerification	: false
+		,	requireUserVerification	: true
 		}
 	).then(
-		( { verified, registrationInfo } )=> {
-			if ( verified && registrationInfo ) {
-				const
-				{ credential } = registrationInfo
-				const
-				existingCredential = user.credentials.find( cred => cred.id === credential.id )
-				if ( ! existingCredential ) {
-					const
-					newCredential = {	//	WebAuthnCredential
-						id			: credential.id
-					,	publicKey	: credential.publicKey
-					,	counter		: credential.counter
-					,	transports	: body.response.transports
-					}
-					user.credentials.push ( newCredential )
+		( { verified, registrationInfo } ) => (
+			verified && user.credentials.push(
+				{	id			: registrationInfo.credential.id
+				,	publicKey	: registrationInfo.credential.publicKey
+				,	counter		: registrationInfo.credential.counter
+				,	transports	: body.response.transports || []
 				}
-			}
-			SendJSONable( S, verified )
-		}
+			)
+		,	session.challenge = null
+		,	SendJSONable( S, verified )
+		)
+		/*
+		( { verified, registrationInfo } ) => (
+			verified && (
+				user.credentials.find( cred => cred.id === registrationInfo.credential.id )
+				?	console.error( 'DUPPED:', cred.id )
+				: (	user.credentials.push(
+						{	id			: registrationInfo.credential.id
+						,	publicKey	: registrationInfo.credential.publicKey
+						,	counter		: registrationInfo.credential.counter
+						,	transports	: body.response.transports || []
+						}
+					)
+				)
+			)
+		,	session.challenge = null
+		,	SendJSONable( S, verified )
+		)
+		*/
 	).catch( _ => InternalServerError( _, Q, S ) )
 ).catch( _ => Unauthorized( _, Q, S ) )
 
@@ -185,7 +238,7 @@ AuthenticationOptions = ( Q, S ) => Session( Q ).then(
 					}
 				)
 			)
-		,	userVerification	: 'preferred'
+		,	userVerification	: 'required'
 		,	rpID				: process.env.RPID
 		}
 	).then(
@@ -215,14 +268,14 @@ Authentication = ( Q, S ) => Promise.all(
 			,	expectedOrigin			: process.env.ORIGIN
 			,	expectedRPID			: process.env.RPID
 			,	credential				: credential
-			,	requireUserVerification	: false
+			,	requireUserVerification	: true
 			}
 		).then(
-			( { verified, authenticationInfo } ) => { 
-				if ( verified ) credential.counter = authenticationInfo.newCounter
-				session.challenge = null;
-				SendJSONable( S, verified )
-			}
+			( { verified, authenticationInfo } ) => (
+				verified && ( credential.counter = authenticationInfo.newCounter )
+			,	session.challenge = null
+			,	SendJSONable( S, verified )
+			)
 		).catch( _ => InternalServerError( _, Q, S ) )
 	).catch( _ => InternalServerError( _, Q, S ) )
 ).catch( _ => Unauthorized( _, Q, S ) )
