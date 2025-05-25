@@ -39,13 +39,13 @@ import {
 } from 'v8'
 
 import {
-} from 'fs/promises'
+	existsSync
+} from 'fs'
 
 import {
-	existsSync
-,	readFileSync
-,	writeFileSync
-} from 'fs'
+	readFile
+,	writeFile
+} from 'fs/promises'
 
 
 const SESSION_FILE = './sessionDB.bin'
@@ -53,43 +53,67 @@ const USER_FILE = './userDB.bin'
 
 const	//	sessionID: { userID, challenge = null }
 sessionDB = existsSync( SESSION_FILE )
-?	deserialize( readFileSync( SESSION_FILE ) )
+?	deserialize( await readFile( SESSION_FILE ) )
 :	{}
 
 const	//	userID: { payload, credential = [] }
 userDB = existsSync( USER_FILE )
-?	deserialize( readFileSync( USER_FILE ) )
+?	deserialize( await readFile( USER_FILE ) )
 :	{}
+
+const
+SyncDBs = async () => (
+	await writeFile( SESSION_FILE	, serialize( sessionDB	) )
+,	await writeFile( USER_FILE		, serialize( userDB		) )
+)
 
 process.on(
 	'SIGINT'
 ,	async () => (
 		console.log( 'SIGINT:', sessionDB, userDB )
-	,	writeFileSync( SESSION_FILE	, serialize( sessionDB	) )
-	,	writeFileSync( USER_FILE	, serialize( userDB		) )
+	,	await SyncDBs()
 	,	process.exit( 0 )
 	)
 )
 
 //	ON DEBUG
-if(	!process.env.GOOGLE_CLIENT_ID	) throw 'GOOGLE_CLIENT_ID'
-if(	!process.env.RPID				) throw 'RPID'
-if(	!process.env.ORIGIN				) throw 'ORIGIN'
+if(	!process.env.GOOGLE_CLIENT_ID	) throw 'NO evn.GOOGLE_CLIENT_ID'
+if(	!process.env.RPID				) throw 'NO evn.RPID'
+if(	!process.env.ORIGIN				) throw 'NO evn.ORIGIN'
+if(	!process.env.SESSION_SECRET		) throw 'NO evn.SESSION_SECRET'
+if(	process.env.SESSION_SECRET.length < 32
+||	!/^[a-zA-Z0-9!@#$%^&*()_+=-]{32,}$/.test( process.env.SESSION_SECRET )
+) throw 'env.SESSION_SECRET TOO WEAK'
 //
 
 const
+Unauthorized = ( E, Q, S ) => (
+	console.error( E )
+,	_401( S, E.message )
+)
+
+const
+InternalServerError = ( _, Q, S ) => (
+	console.error( _ )
+,	_500( S, `${_}` )
+)
+
+const
 GoogleAuth = ( Q, S ) => BodyAsJSON( Q ).then(
+	//	idToken が nullable の場合、TypeErrorで下のcatchで処理される
 	body => new OAuth2Client( process.env.GOOGLE_CLIENT_ID ).verifyIdToken(
 		{	idToken		: body.credential
 		,	audience	: process.env.GOOGLE_CLIENT_ID
 		}
 	).then(
-		ticket => {
+		async ticket => {
 			const
 			sessionID = crypto.randomUUID()
 
 			const
 			payload = ticket.getPayload()
+
+			if ( !payload || !payload.sub ) throw new Error( 'Google payload is missing or invalid.' )
 
 			const
 			userID = payload.sub
@@ -101,6 +125,7 @@ GoogleAuth = ( Q, S ) => BodyAsJSON( Q ).then(
 			sessionDB[ sessionID ] = { userID, challenge: null }
 
 console.log( 'GoogleAuth:', sessionDB, userDB )
+			await SyncDBs()
 
 			S.setHeader(
 				'Set-Cookie'
@@ -108,17 +133,57 @@ console.log( 'GoogleAuth:', sessionDB, userDB )
 			)
 			SendJSONable( S, payload )
 		}
-	).catch( _ => _401( S ) )
-).catch( _ => _500( S ) )
+	).catch( E => Unauthorized( E, Q, S ) )		//	verifyIdToken
+).catch( _ => InternalServerError( _, Q, S ) )	//	BodyAsJSON
 
 ////////////////////////////////////////////////////////////////
 
 const
-Session = Q => new Promise(
+CatchSWA = ( _, Q, S ) => {
+
+	const
+	$ = _ instanceof Error ? `${_.name}:${_.message}` : `${_}`
+
+	console.error( 'CatchSWA:', $ )
+
+	if ( _ instanceof Error ) {
+
+		switch ( _.name ) {
+
+		case 'InvalidStateError':
+		case 'TypeError':
+		case 'SecurityError':
+		case 'ConstraintError':
+			_400( S, $ )
+			break
+
+		case 'NotAllowedError':
+		case 'AbortError':
+		case 'DOMException':
+			_401( S, $ )
+			break
+
+		default:
+			_500( S, $ )
+			break
+		}
+	} else {
+		_500( S, $ )
+	}
+}
+
+const
+Session = ( Q, checkChallenge = false ) => new Promise(
 	( R, J ) => {
 		const
-		session = sessionDB[ ParseSessionCookie( Q.headers.cookie ) ]
+		sessionID = ParseSessionCookie( Q.headers.cookie )
+		if ( !sessionID ) throw new Error( 'Invalid session' )
+
+		const
+		session = sessionDB[ sessionID ]
 		if ( !session ) throw new Error( 'Session not found' )
+
+		if ( checkChallenge && !session.challenge ) throw new Error( 'No challenge' )
 
 		const
 		user = userDB[ session.userID ]
@@ -126,19 +191,6 @@ Session = Q => new Promise(
 
 		R( { session, user } )
 	}
-)
-
-////	TODO: DETECT ILLEGAL ATTEMPT AND REPORT IT
-const
-Unauthorized = ( _, Q, S ) => (
-	console.error( _ )
-,	_401( S, _.message )
-)
-
-const
-InternalServerError = ( _, Q, S ) => (
-	console.error( _ )
-,	_500( S, _.message )
 )
 
 const
@@ -177,12 +229,12 @@ RegistrationOptions = ( Q, S ) => Session( Q ).then(
 			session.challenge = options.challenge
 		,	SendJSONable( S, options )
 		)
-	).catch( _ => InternalServerError( _, Q, S ) )
-).catch( _ => Unauthorized( _, Q, S ) )
+	).catch( _ => CatchSWA( _, Q, S ) )	//	generateRegistrationOptions
+).catch( E => Unauthorized( E, Q, S ) )	//	Session
 
 const
 Registration = ( Q, S ) => Promise.all(
-	[	Session( Q )
+	[	Session( Q, true )
 	,	BodyAsJSON( Q )
 	]
 ).then(
@@ -202,29 +254,12 @@ Registration = ( Q, S ) => Promise.all(
 				,	transports	: body.response.transports || []
 				}
 			)
-		,	session.challenge = null
 		,	SendJSONable( S, verified )
 		)
-		/*
-		( { verified, registrationInfo } ) => (
-			verified && (
-				user.credentials.find( cred => cred.id === registrationInfo.credential.id )
-				?	console.error( 'DUPPED:', cred.id )
-				: (	user.credentials.push(
-						{	id			: registrationInfo.credential.id
-						,	publicKey	: registrationInfo.credential.publicKey
-						,	counter		: registrationInfo.credential.counter
-						,	transports	: body.response.transports || []
-						}
-					)
-				)
-			)
-		,	session.challenge = null
-		,	SendJSONable( S, verified )
-		)
-		*/
-	).catch( _ => InternalServerError( _, Q, S ) )
-).catch( _ => Unauthorized( _, Q, S ) )
+	).catch( _ => CatchSWA( _, Q, S ) ).finally(	//	verifyRegistrationResponse
+		() => session.challenge = null
+	)
+).catch( E => Unauthorized( E, Q, S ) )				//	[ Session, BodyAsJSON ]
 
 const
 AuthenticationOptions = ( Q, S ) => Session( Q ).then(
@@ -246,19 +281,21 @@ AuthenticationOptions = ( Q, S ) => Session( Q ).then(
 			session.challenge = options.challenge
 		,	SendJSONable( S, options )
 		)
-	).catch( _ => InternalServerError( _, Q, S ) )
-).catch( _ => Unauthorized( _, Q, S ) )
+	).catch( _ => CatchSWA( _, Q, S ) )	//	generateAuthenticationOptions
+).catch( E => Unauthorized( E, Q, S ) )	//	Session
 
 const
 Authentication = ( Q, S ) => Promise.all(
-	[	Session( Q )
+	[	Session( Q, true )
 	,	BodyAsJSON( Q )
 	]
 ).then(
 	( [ { session, user }, body ] ) => new Promise(
 		( R, J ) => {
 			const
-			credential = user.credentials.find( _ => _.id === body.id )
+			credential = user.credentials.find(
+				_ => Buffer.compare( Buffer.from( _.id ), Buffer.from( body.id ) ) === 0
+			)
 			credential ? R( credential ) : J()
 		}
 	).then(
@@ -273,12 +310,15 @@ Authentication = ( Q, S ) => Promise.all(
 		).then(
 			( { verified, authenticationInfo } ) => (
 				verified && ( credential.counter = authenticationInfo.newCounter )
-			,	session.challenge = null
 			,	SendJSONable( S, verified )
 			)
-		).catch( _ => InternalServerError( _, Q, S ) )
-	).catch( _ => InternalServerError( _, Q, S ) )
-).catch( _ => Unauthorized( _, Q, S ) )
+		).catch( _ => CatchSWA( _, Q, S ) ).finally(	//	verifyAuthenticationResponse
+			() => session.challenge = null
+		)
+	).catch( _ => InternalServerError( _, Q, S ) )		//	credential が取れなかった場合
+).catch( E => Unauthorized( E, Q, S ) )					//	[ Session, BodyAsJSON ]
+
+
 
 const
 server = CORS_API_STATIC_SERVER(
@@ -289,8 +329,8 @@ server = CORS_API_STATIC_SERVER(
 	,	'/webauthn/auth'				: Authentication
 	}
 ,	process.argv[ 2 ] || '.'
+,	origin => [ 'http://localhost:3000' ].includes( origin )
 ).listen(
 	process.env.PORT || 3000
 ,	() => console.log( 'Bullet server stated on:', server.address() )
 )
-

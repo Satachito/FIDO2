@@ -6,3 +6,5 @@ unset SESSION_SECRET
 
 unset RPID
 unset ORIGIN
+
+unset DEBUG
